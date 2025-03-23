@@ -25,14 +25,14 @@ The project investigates the intersection of parameter-efficient fine-tuning met
 
 ## Project Structure
 
-- `fedVer5_hardprompt.py`: Implementation of discrete prompt tuning for IMDB
-- `fedVer5_lora.py`: LoRA implementation for IMDB
-- `fedVer5_prefix.py`: Prefix tuning implementation for IMDB
-- `fedVer5_ptuning.py`: P-tuning implementation for IMDB
-- `fedVer5_catdog_hardprompt.py`: Discrete prompt tuning for CIFAR10 cat-dog classification
-- `fedVer5_catdog_lora.py`: LoRA for CIFAR10 cat-dog classification
-- `fedVer5_catdog_prefix.py`: Prefix tuning for CIFAR10 cat-dog classification
-- `fedVer5_catdog_ptuning.py`: P-tuning for CIFAR10 cat-dog classification
+- `FedExp_hardprompt.py`: Implementation of discrete prompt tuning for IMDB
+- `FedExp_lora.py`: LoRA implementation for IMDB
+- `FedExp_prefix.py`: Prefix tuning implementation for IMDB
+- `FedExp_ptuning.py`: P-tuning implementation for IMDB
+- `FedExp_catdog_hardprompt.py`: Discrete prompt tuning for CIFAR10 cat-dog classification
+- `FedExp_catdog_lora.py`: LoRA for CIFAR10 cat-dog classification
+- `FedExp_catdog_prefix.py`: Prefix tuning for CIFAR10 cat-dog classification
+- `FedExp_catdog_ptuning.py`: P-tuning for CIFAR10 cat-dog classification
 
 ## Usage
 
@@ -43,7 +43,7 @@ The project investigates the intersection of parameter-efficient fine-tuning met
 
 2. To run an experiment with one of the implementations:
    ```bash
-   python fedVer5_lora.py  # Example for LoRA on IMDB
+   python FedExp_lora.py  # Example for LoRA on IMDB
    ```
 
 3. Each script includes an experiment repeater that runs the experiment multiple times with different seeds for statistical validation.
