@@ -760,12 +760,12 @@ def load_algorithm_state(algorithm: str, state_dict: dict, server, clients_list:
 
     
 class FederatedLogger:
-    def __init__(self, base_dir: str = "logs"):
-        self.base_dir = base_dir
+    def __init__(self, base_dir: str = "logs", peft_method =''):
+        self.base_dir = os.path.join(base_dir, peft_method)
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Create directory structure
-        self.experiment_dir = os.path.join(base_dir, self.timestamp)
+        self.experiment_dir = os.path.join(self.base_dir, self.timestamp)
         self.client_dir = os.path.join(self.experiment_dir, "client_logs")
         self.global_dir = os.path.join(self.experiment_dir, "global_logs")
         
@@ -1051,317 +1051,336 @@ def create_data_splits(train=True, num_clients=5):
 
 def main():
     # Set random seeds
-    set_seeds(42)
+    # Experiment configuration
+    experiment_start = 1
+    experiment_end = 5
+    seed = 39
     
-    # Initialize logging and checkpointing
-    logger = FederatedLogger(base_dir="federated_logs")
-    checkpoint_manager = CheckpointManager(base_dir="federated_checkpoints", peft_method="discrete_prompt_catdog")
-    
-    # Configure parameters
-    NUM_CLIENTS = 5
-    num_rounds = 10
-    batch_size = 16
-    local_epochs = 2
-    
-    # Save configuration
-    config = {
-        "num_clients": NUM_CLIENTS,
-        "num_rounds": num_rounds,
-        "batch_size": batch_size,
-        "local_epochs": local_epochs,
-        "device": str(device)
-    }
-    logger.save_configuration(config)
-    
-    print("Loading and preparing datasets...")
-    # Create validation dataset
-    val_data, val_targets = create_binary_cifar10(train=False)
-    val_dataset = BinaryImageDataset(val_data, val_targets, test_transform)
-    
-    # Create client datasets
-    client_train_datasets = create_data_splits(train=True, num_clients=NUM_CLIENTS)
-    
-    print("Initializing models...")
-    # Initialize base model (ResNet-18)
-    base_model = resnet18(pretrained=True)
-    
-    # Create prompt tuning model
-    model = DiscretePromptTuningModel(
-        base_model=base_model,
-        prompt_text="classify this image",  # Not used but kept for consistency
-        device=device
-    ).to(device)
-    
-    # Define available servers and clients
-    servers = {
-        "fedavg": FedAvgServer,
-        "fedprox": FedProxServer,
-        "fedopt": FedOptServer,
-        "feddyn": FedDynServer,
-        "scaffold": SCAFFOLDServer,
-        "moon": FedAvgServer,
-        "fednova": FedNovaServer
-    }
-    
-    clients = {
-        "fedavg": FedAvgClient,
-        "fedprox": FedProxClient,
-        "moon": MOONClient,
-        "scaffold": SCAFFOLDClient,
-        "fedopt": FedAvgClient,
-        "feddyn": FedDynClient,
-        "fednova": FedNovaClient
-    }
-    
-    # Algorithm-specific parameters
-    algorithm_params = {
-        "fedprox": {"client_params": {"mu": 0.01}, "server_params": {}},
-        "fedopt": {"client_params": {}, "server_params": {"beta1": 0.9, "beta2": 0.999, "tau": 1e-3}},
-        "moon": {"client_params": {"temperature": 0.5}, "server_params": {}},
-        "feddyn": {"client_params": {"alpha": 0.01}, "server_params": {"alpha": 0.01}},
-        "scaffold": {"client_params": {}, "server_params": {}},
-        "fednova": {"client_params": {}, "server_params": {}},
-        "fedavg": {"client_params": {}, "server_params": {}}
-    }
-    
-    # Define order of algorithms to run
-    aggregation_types = [
-        "fedavg", "fedprox", "fedopt", "moon", "feddyn", 
-        "scaffold", "fednova"
-    ]
-    
-    # Load latest checkpoint if available
-    checkpoint_data, last_algorithm = checkpoint_manager.load_latest_checkpoint()
-    start_round = 0
-    completed_algorithms = set()
-    
-    if checkpoint_data is not None:
-        print(f"Found checkpoint from round {checkpoint_data['metadata']['round']}")
-        metadata_file = os.path.join(checkpoint_manager.checkpoint_dir, "metadata.json")
+    for experiment_num in range(experiment_start, experiment_end + 1):
+        # Delete federated_checkpoints directory if it exists
+        if os.path.exists("federated_checkpoints"):
+            shutil.rmtree("federated_checkpoints")
+            print("Deleted existing federated_checkpoints directory")
         
-        if os.path.exists(metadata_file):
-            with open(metadata_file, 'r') as f:
-                metadata = json.load(f)
-            
-            checkpoints = metadata.get("checkpoints", [])
-            algorithm_rounds = {}
-            
-            for checkpoint in checkpoints:
-                alg = checkpoint["algorithm"]
-                round_num = checkpoint["round"]
-                algorithm_rounds[alg] = round_num
-                
-                if round_num == num_rounds:
-                    completed_algorithms.add(alg)
-            
-            if last_algorithm in algorithm_rounds and last_algorithm not in completed_algorithms:
-                start_round = algorithm_rounds[last_algorithm]
-                if start_round >= num_rounds:
-                    start_round = 0
-                print(f"Continuing {last_algorithm} from round {start_round}")
-    
-        aggregation_types = [alg for alg in aggregation_types if alg not in completed_algorithms]
-        if last_algorithm in aggregation_types:
-            idx = aggregation_types.index(last_algorithm)
-            aggregation_types = aggregation_types[idx:]
-    
-    if not aggregation_types:
-        print("All algorithms have completed training!")
-        return
-    
-    print(f"Will run the following algorithms: {aggregation_types}")
-    
-    results = {}
-    client_logs = {
-        agg_type: logger.create_client_log(agg_type)
-        for agg_type in aggregation_types
-    }
-    
-    # Run experiments for each algorithm
-    for agg_type in aggregation_types:
-        print(f"\nStarting training with {agg_type.upper()}")
-        print("-" * 50)
+        print(f"\nStarting Experiment {experiment_num}")
+        print("=" * 50)
         
-        params = algorithm_params.get(agg_type, {
-            "client_params": {},
-            "server_params": {}
-        })
+        # Update seed for each experiment
+        seed += 1
+        set_seeds(seed)
         
-        server_class = servers.get(agg_type)
-        server = server_class(model, **params["server_params"])
+        # Set PEFT method for this experiment
+        peft_method = f"catdog_hardprompt{experiment_num}"
+
+        # Initialize logging and checkpointing
+        logger = FederatedLogger(base_dir="federated_logs", peft_method=peft_method)
+        checkpoint_manager = CheckpointManager(base_dir="federated_checkpoints", peft_method=peft_method)
+
+        # Configure parameters
+        NUM_CLIENTS = 5
+        num_rounds = 10
+        batch_size = 16
+        local_epochs = 2
         
-        client_class = clients.get(agg_type)
-        clients_list = [
-            client_class(
-                copy.deepcopy(model),
-                train_dataset,
-                val_dataset,
-                device,
-                i,
-                **params["client_params"]
-            )
-            for i, train_dataset in enumerate(client_train_datasets)
+        # Save configuration
+        config = {
+            "num_clients": NUM_CLIENTS,
+            "num_rounds": num_rounds,
+            "batch_size": batch_size,
+            "local_epochs": local_epochs,
+            "device": str(device)
+        }
+        logger.save_configuration(config)
+        
+        print("Loading and preparing datasets...")
+        # Create validation dataset
+        val_data, val_targets = create_binary_cifar10(train=False)
+        val_dataset = BinaryImageDataset(val_data, val_targets, test_transform)
+        
+        # Create client datasets
+        client_train_datasets = create_data_splits(train=True, num_clients=NUM_CLIENTS)
+        
+        print("Initializing models...")
+        # Initialize base model (ResNet-18)
+        base_model = resnet18(pretrained=True)
+        
+        # Create prompt tuning model
+        model = DiscretePromptTuningModel(
+            base_model=base_model,
+            prompt_text="classify this image",  # Not used but kept for consistency
+            device=device
+        ).to(device)
+        
+        # Define available servers and clients
+        servers = {
+            "fedavg": FedAvgServer,
+            "fedprox": FedProxServer,
+            "fedopt": FedOptServer,
+            "feddyn": FedDynServer,
+            "scaffold": SCAFFOLDServer,
+            "moon": FedAvgServer,
+            "fednova": FedNovaServer
+        }
+        
+        clients = {
+            "fedavg": FedAvgClient,
+            "fedprox": FedProxClient,
+            "moon": MOONClient,
+            "scaffold": SCAFFOLDClient,
+            "fedopt": FedAvgClient,
+            "feddyn": FedDynClient,
+            "fednova": FedNovaClient
+        }
+        
+        # Algorithm-specific parameters
+        algorithm_params = {
+            "fedprox": {"client_params": {"mu": 0.01}, "server_params": {}},
+            "fedopt": {"client_params": {}, "server_params": {"beta1": 0.9, "beta2": 0.999, "tau": 1e-3}},
+            "moon": {"client_params": {"temperature": 0.5}, "server_params": {}},
+            "feddyn": {"client_params": {"alpha": 0.01}, "server_params": {"alpha": 0.01}},
+            "scaffold": {"client_params": {}, "server_params": {}},
+            "fednova": {"client_params": {}, "server_params": {}},
+            "fedavg": {"client_params": {}, "server_params": {}}
+        }
+        
+        # Define order of algorithms to run
+        aggregation_types = [
+            "fedavg", "fedprox", "fedopt", "moon", "feddyn", 
+            "scaffold", "fednova"
         ]
         
-        best_accuracy = 0
-        round_metrics = []
+        # Load latest checkpoint if available
+        checkpoint_data, last_algorithm = checkpoint_manager.load_latest_checkpoint()
+        start_round = 0
+        completed_algorithms = set()
         
-        # Load checkpoint state if available
-        if checkpoint_data is not None and agg_type == last_algorithm:
-            server.global_model.load_state_dict(checkpoint_data['global_model_state'])
-            for client, state in zip(clients_list, checkpoint_data['clients_states']):
-                client.model.load_state_dict(state)
-            if checkpoint_data['server_state']:
-                load_algorithm_state(agg_type, checkpoint_data['server_state'], 
-                                  server, clients_list)
-            if checkpoint_data['extra_state']:
-                best_accuracy = checkpoint_data['extra_state'].get('best_accuracy', 0)
-                round_metrics = checkpoint_data['extra_state'].get('round_metrics', [])
+        if checkpoint_data is not None:
+            print(f"Found checkpoint from round {checkpoint_data['metadata']['round']}")
+            metadata_file = os.path.join(checkpoint_manager.checkpoint_dir, "metadata.json")
+            
+            if os.path.exists(metadata_file):
+                with open(metadata_file, 'r') as f:
+                    metadata = json.load(f)
+                
+                checkpoints = metadata.get("checkpoints", [])
+                algorithm_rounds = {}
+                
+                for checkpoint in checkpoints:
+                    alg = checkpoint["algorithm"]
+                    round_num = checkpoint["round"]
+                    algorithm_rounds[alg] = round_num
+                    
+                    if round_num == num_rounds:
+                        completed_algorithms.add(alg)
+                
+                if last_algorithm in algorithm_rounds and last_algorithm not in completed_algorithms:
+                    start_round = algorithm_rounds[last_algorithm]
+                    if start_round >= num_rounds:
+                        start_round = 0
+                    print(f"Continuing {last_algorithm} from round {start_round}")
         
-        # Initialize algorithm-specific components
-        if agg_type == "scaffold":
-            server.initialize_control_variate()
-            for client in clients_list:
-                client.initialize_control_variate()
+            aggregation_types = [alg for alg in aggregation_types if alg not in completed_algorithms]
+            if last_algorithm in aggregation_types:
+                idx = aggregation_types.index(last_algorithm)
+                aggregation_types = aggregation_types[idx:]
         
-        # Training loop
-        for round in range(start_round, num_rounds):
-            print(f"\nRound {round + 1}/{num_rounds}")
-            print("-" * 30)
+        if not aggregation_types:
+            print("All algorithms have completed training!")
+            return
+        
+        print(f"Will run the following algorithms: {aggregation_types}")
+        
+        results = {}
+        client_logs = {
+            agg_type: logger.create_client_log(agg_type)
+            for agg_type in aggregation_types
+        }
+        
+        # Run experiments for each algorithm
+        for agg_type in aggregation_types:
+            print(f"\nStarting training with {agg_type.upper()}")
+            print("-" * 50)
             
-            # Get current global parameters
-            if agg_type == "scaffold":
-                global_params = (server.global_model.state_dict(), server.global_control_variate)
-            else:
-                global_params = server.global_model.state_dict()
-            
-            # Client training
-            client_models = []
-            client_metrics = []
-            round_accuracies = []
-            total_train_loss = 0
-            
-            for client in clients_list:
-                if agg_type == "scaffold":
-                    train_loss, accuracy, val_loss, control_delta = client.train(
-                        *global_params,
-                        aggregation_type=agg_type,
-                        epochs=local_epochs,
-                        batch_size=batch_size
-                    )
-                    client_metrics.append(control_delta)
-                elif agg_type in ["feddyn", "fednova"]:
-                    train_loss, accuracy, val_loss, metric = client.train(
-                        global_params,
-                        aggregation_type=agg_type,
-                        epochs=local_epochs,
-                        batch_size=batch_size
-                    )
-                    client_metrics.append(metric)
-                else:
-                    train_loss, accuracy, val_loss = client.train(
-                        global_params,
-                        aggregation_type=agg_type,
-                        epochs=local_epochs,
-                        batch_size=batch_size
-                    )
-                
-                logger.log_client_metrics(
-                    client_logs[agg_type],
-                    round + 1,
-                    client.client_id,
-                    train_loss,
-                    val_loss,
-                    accuracy
-                )
-                
-                print(f"Client {client.client_id}:")
-                print(f"  Training Loss: {train_loss:.4f}")
-                print(f"  Validation Loss: {val_loss:.4f}")
-                print(f"  Validation Accuracy: {accuracy:.2f}%")
-                
-                client_models.append(client.get_prompt_params())
-                round_accuracies.append(accuracy)
-                total_train_loss += train_loss
-            
-            # Calculate metrics
-            avg_accuracy = sum(round_accuracies) / len(round_accuracies)
-            avg_train_loss = total_train_loss / len(clients_list)
-            
-            logger.log_global_metrics(
-                agg_type,
-                round + 1,
-                avg_accuracy,
-                avg_accuracy,
-                avg_train_loss
-            )
-            
-            round_metrics.append({
-                'round': round + 1,
-                'avg_accuracy': avg_accuracy,
-                'client_accuracies': round_accuracies
+            params = algorithm_params.get(agg_type, {
+                "client_params": {},
+                "server_params": {}
             })
             
-            print(f"\nRound {round + 1} Average Accuracy: {avg_accuracy:.2f}%")
+            server_class = servers.get(agg_type)
+            server = server_class(model, **params["server_params"])
             
-            if avg_accuracy > best_accuracy:
-                best_accuracy = avg_accuracy
-                print(f"New best accuracy!")
-            
-            # Server aggregation
-            if agg_type == "fednova":
-                global_params = server.aggregate_models(client_models, client_metrics)
-            elif agg_type == "scaffold":
-                global_params, server_control_variate = server.aggregate_models(
-                    client_models,
-                    client_metrics
+            client_class = clients.get(agg_type)
+            clients_list = [
+                client_class(
+                    copy.deepcopy(model),
+                    train_dataset,
+                    val_dataset,
+                    device,
+                    i,
+                    **params["client_params"]
                 )
-            elif agg_type == "feddyn":
-                global_params = server.aggregate_models(client_models, client_metrics)
-            else:
-                global_params = server.aggregate_models(client_models)
+                for i, train_dataset in enumerate(client_train_datasets)
+            ]
             
-            # Save checkpoint
-            checkpoint_manager.save_checkpoint(
-                round_num=round + 1,
-                algorithm=agg_type,
-                global_model_state=server.global_model.state_dict(),
-                clients_states=[client.model.state_dict() for client in clients_list],
-                server_state=create_algorithm_state_dict(agg_type, server, clients_list),
-                extra_state={
+            best_accuracy = 0
+            round_metrics = []
+            
+            # Load checkpoint state if available
+            if checkpoint_data is not None and agg_type == last_algorithm:
+                server.global_model.load_state_dict(checkpoint_data['global_model_state'])
+                for client, state in zip(clients_list, checkpoint_data['clients_states']):
+                    client.model.load_state_dict(state)
+                if checkpoint_data['server_state']:
+                    load_algorithm_state(agg_type, checkpoint_data['server_state'], 
+                                    server, clients_list)
+                if checkpoint_data['extra_state']:
+                    best_accuracy = checkpoint_data['extra_state'].get('best_accuracy', 0)
+                    round_metrics = checkpoint_data['extra_state'].get('round_metrics', [])
+            
+            # Initialize algorithm-specific components
+            if agg_type == "scaffold":
+                server.initialize_control_variate()
+                for client in clients_list:
+                    client.initialize_control_variate()
+            
+            # Training loop
+            for round in range(start_round, num_rounds):
+                print(f"\nRound {round + 1}/{num_rounds}")
+                print("-" * 30)
+                
+                # Get current global parameters
+                if agg_type == "scaffold":
+                    global_params = (server.global_model.state_dict(), server.global_control_variate)
+                else:
+                    global_params = server.global_model.state_dict()
+                
+                # Client training
+                client_models = []
+                client_metrics = []
+                round_accuracies = []
+                total_train_loss = 0
+                
+                for client in clients_list:
+                    if agg_type == "scaffold":
+                        train_loss, accuracy, val_loss, control_delta = client.train(
+                            *global_params,
+                            aggregation_type=agg_type,
+                            epochs=local_epochs,
+                            batch_size=batch_size
+                        )
+                        client_metrics.append(control_delta)
+                    elif agg_type in ["feddyn", "fednova"]:
+                        train_loss, accuracy, val_loss, metric = client.train(
+                            global_params,
+                            aggregation_type=agg_type,
+                            epochs=local_epochs,
+                            batch_size=batch_size
+                        )
+                        client_metrics.append(metric)
+                    else:
+                        train_loss, accuracy, val_loss = client.train(
+                            global_params,
+                            aggregation_type=agg_type,
+                            epochs=local_epochs,
+                            batch_size=batch_size
+                        )
+                    
+                    logger.log_client_metrics(
+                        client_logs[agg_type],
+                        round + 1,
+                        client.client_id,
+                        train_loss,
+                        val_loss,
+                        accuracy
+                    )
+                    
+                    print(f"Client {client.client_id}:")
+                    print(f"  Training Loss: {train_loss:.4f}")
+                    print(f"  Validation Loss: {val_loss:.4f}")
+                    print(f"  Validation Accuracy: {accuracy:.2f}%")
+                    
+                    client_models.append(client.get_prompt_params())
+                    round_accuracies.append(accuracy)
+                    total_train_loss += train_loss
+                
+                # Calculate metrics
+                avg_accuracy = sum(round_accuracies) / len(round_accuracies)
+                avg_train_loss = total_train_loss / len(clients_list)
+                
+                logger.log_global_metrics(
+                    agg_type,
+                    round + 1,
+                    avg_accuracy,
+                    avg_accuracy,
+                    avg_train_loss
+                )
+                
+                round_metrics.append({
+                    'round': round + 1,
+                    'avg_accuracy': avg_accuracy,
+                    'client_accuracies': round_accuracies
+                })
+                
+                print(f"\nRound {round + 1} Average Accuracy: {avg_accuracy:.2f}%")
+                
+                if avg_accuracy > best_accuracy:
+                    best_accuracy = avg_accuracy
+                    print(f"New best accuracy!")
+                
+                # Server aggregation
+                if agg_type == "fednova":
+                    global_params = server.aggregate_models(client_models, client_metrics)
+                elif agg_type == "scaffold":
+                    global_params, server_control_variate = server.aggregate_models(
+                        client_models,
+                        client_metrics
+                    )
+                elif agg_type == "feddyn":
+                    global_params = server.aggregate_models(client_models, client_metrics)
+                else:
+                    global_params = server.aggregate_models(client_models)
+                
+                # Save checkpoint
+                checkpoint_manager.save_checkpoint(
+                    round_num=round + 1,
+                    algorithm=agg_type,
+                    global_model_state=server.global_model.state_dict(),
+                    clients_states=[client.model.state_dict() for client in clients_list],
+                    server_state=create_algorithm_state_dict(agg_type, server, clients_list),
+                    extra_state={
+                        'best_accuracy': best_accuracy,
+                        'round_metrics': round_metrics
+                    }
+                )
+            
+            if round_metrics:
+                logger.log_experiment_summary(
+                    agg_type,
+                    best_accuracy,
+                    round_metrics[-1]['avg_accuracy'],
+                    sum([m['avg_accuracy'] for m in round_metrics]) / len(round_metrics),
+                    num_rounds,
+                    NUM_CLIENTS
+                )
+                
+                results[agg_type] = {
                     'best_accuracy': best_accuracy,
                     'round_metrics': round_metrics
                 }
-            )
-        
-        if round_metrics:
-            logger.log_experiment_summary(
-                agg_type,
-                best_accuracy,
-                round_metrics[-1]['avg_accuracy'],
-                sum([m['avg_accuracy'] for m in round_metrics]) / len(round_metrics),
-                num_rounds,
-                NUM_CLIENTS
-            )
+            else:
+                print(f"Warning: No metrics available for {agg_type}")
             
-            results[agg_type] = {
-                'best_accuracy': best_accuracy,
-                'round_metrics': round_metrics
-            }
-        else:
-            print(f"Warning: No metrics available for {agg_type}")
+            print(f"\n{agg_type.upper()} Final Best Accuracy: {best_accuracy:.2f}%")
+            start_round = 0
         
-        print(f"\n{agg_type.upper()} Final Best Accuracy: {best_accuracy:.2f}%")
-        start_round = 0
-    
-    print("\nComparative Results:")
-    print("-" * 50)
-    for alg, res in results.items():
-        print(f"{alg.upper()}:")
-        print(f"  Best Accuracy: {res['best_accuracy']:.2f}%")
-        if res['round_metrics']:
-            print(f"  Final Round Avg Accuracy: {res['round_metrics'][-1]['avg_accuracy']:.2f}%")
-        print("-" * 30)
+        print("\nComparative Results:")
+        print("-" * 50)
+        for alg, res in results.items():
+            print(f"{alg.upper()}:")
+            print(f"  Best Accuracy: {res['best_accuracy']:.2f}%")
+            if res['round_metrics']:
+                print(f"  Final Round Avg Accuracy: {res['round_metrics'][-1]['avg_accuracy']:.2f}%")
+            print("-" * 30)
 
 if __name__ == "__main__":
     main()
